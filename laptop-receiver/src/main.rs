@@ -1,6 +1,3 @@
-// Uncomment the attribute below when compiling a completely silent background executable on Windows:
-// #![windows_subsystem = "windows"]
-
 use std::error::Error;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -14,9 +11,46 @@ const UDP_DISCOVERY_PORT: u16 = 45454;
 const DEFAULT_TCP_PORT: u16 = 45455;
 const MAX_FILENAME_LEN: usize = 1024;
 const BEACON_INTERVAL_SECS: u64 = 2;
+const HIDE_CONSOLE_AFTER_SECS: u64 = 30;
+
+#[cfg(windows)]
+mod win_console {
+    use std::ffi::c_void;
+
+    const SW_HIDE: i32 = 0;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleWindow() -> *mut c_void;
+        fn FreeConsole() -> i32;
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn ShowWindow(hWnd: *mut c_void, nCmdShow: i32) -> i32;
+        fn GetForegroundWindow() -> *mut c_void;
+        fn PostMessageW(hWnd: *mut c_void, Msg: u32, wParam: usize, lParam: isize) -> i32;
+    }
+
+    /// Hides the console window and detaches from Windows Terminal so the window closes
+    /// while the background process continues running silently.
+    pub fn hide_console_window() {
+        unsafe {
+            let console_hwnd = GetConsoleWindow();
+            if !console_hwnd.is_null() {
+                ShowWindow(console_hwnd, SW_HIDE);
+            }
+            // Detach from the console host (closes Windows Terminal tab/window if it was launched solely for this exe)
+            FreeConsole();
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Support running as a completely detached background daemon when spawned with `--background-daemon`
+    let is_daemon_child = std::env::args().any(|arg| arg == "--background-daemon");
+
     let tcp_port = std::env::var("INSTANT_DROP_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
@@ -35,14 +69,46 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .map(|ip| ip.to_string())
         .unwrap_or_else(|_| "0.0.0.0".to_string());
 
-    println!("==========================================================");
-    println!("  InstantDrop Receiver v1.0.0 (Headless Rust Daemon)");
-    println!("==========================================================");
-    println!("[READY] Device Name  : {}", device_name);
-    println!("[READY] Local IP     : {}", local_ip);
-    println!("[READY] Listening on : 0.0.0.0:{} (TCP) | UDP Beacon: {}", tcp_port, UDP_DISCOVERY_PORT);
-    println!("[READY] Save Folder  : {}", save_dir.display());
-    println!("----------------------------------------------------------");
+    if !is_daemon_child {
+        println!("==========================================================");
+        println!("  InstantDrop Receiver v1.0.0 (Headless Rust Daemon)");
+        println!("==========================================================");
+        println!("[READY] Device Name  : {}", device_name);
+        println!("[READY] Local IP     : {}", local_ip);
+        println!(
+            "[READY] Listening on : 0.0.0.0:{} (TCP) | UDP Beacon: {}",
+            tcp_port, UDP_DISCOVERY_PORT
+        );
+        println!("[READY] Save Folder  : {}", save_dir.display());
+        println!(
+            "[INFO]  Window will close in {}s and continue silently in background...",
+            HIDE_CONSOLE_AFTER_SECS
+        );
+        println!("----------------------------------------------------------");
+
+        // On Windows, keep the window open & receiving for 30 seconds, then spawn a detached
+        // windowless background daemon (`CREATE_NO_WINDOW`) and exit this console process
+        // so Windows Terminal / cmd.exe closes cleanly after 30 seconds!
+        #[cfg(windows)]
+        {
+            let udp_task = run_udp_broadcaster(tcp_port, device_name.clone());
+            let tcp_task = run_tcp_listener(tcp_port, Arc::clone(&save_dir));
+
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(HIDE_CONSOLE_AFTER_SECS)) => {
+                    println!("[INFO] Switching to silent background mode now...");
+                    spawn_detached_background_daemon();
+                    // Hide console window as fallback if hosted in conhost
+                    win_console::hide_console_window();
+                    return Ok(());
+                }
+                res = async { tokio::join!(udp_task, tcp_task) } => {
+                    let _ = res;
+                    return Ok(());
+                }
+            }
+        }
+    }
 
     let udp_task = run_udp_broadcaster(tcp_port, device_name);
     let tcp_task = run_tcp_listener(tcp_port, save_dir);
@@ -56,6 +122,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+/// Spawns a detached, windowless background copy of this executable with `--background-daemon`
+/// using the Windows `CREATE_NO_WINDOW` (0x08000000) creation flag so the console window closes
+/// completely after 30 seconds while the daemon keeps running silently in the background.
+#[cfg(windows)]
+fn spawn_detached_background_daemon() {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const DETACHED_PROCESS: u32 = 0x00000008;
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe_path)
+            .arg("--background-daemon")
+            .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+            .spawn();
+    }
 }
 
 /// Locates `C:\Users\QS\Desktop\detectmoney\my_photos` (or `INSTANT_DROP_DIR` if set) and creates it if it doesn't exist.
@@ -114,8 +197,26 @@ async fn run_tcp_listener(
     tcp_port: u16,
     save_dir: Arc<PathBuf>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    // Retry binding briefly in case the 30s foreground process is just releasing the socket
     let bind_addr = format!("0.0.0.0:{}", tcp_port);
-    let listener = TcpListener::bind(&bind_addr).await?;
+    let mut last_err = None;
+    let mut listener_opt = None;
+    for _ in 0..20 {
+        match TcpListener::bind(&bind_addr).await {
+            Ok(l) => {
+                listener_opt = Some(l);
+                break;
+            }
+            Err(e) => {
+                last_err = Some(e);
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+        }
+    }
+    let listener = match listener_opt {
+        Some(l) => l,
+        None => return Err(Box::new(last_err.unwrap())),
+    };
 
     loop {
         let (stream, peer_addr) = listener.accept().await?;
@@ -235,4 +336,3 @@ async fn resolve_unique_filepath(dir: &Path, filename: &str) -> PathBuf {
         counter += 1;
     }
 }
-
