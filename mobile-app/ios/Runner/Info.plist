@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>InstantDrop</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>instant_drop</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(FLUTTER_BUILD_NAME)</string>
+	<key>CFBundleVersion</key>
+	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+
+	<!-- Camera & Photo Library Usage Descriptions -->
+	<key>NSCameraUsageDescription</key>
+	<string>InstantDrop uses the camera to capture and immediately transfer full-resolution photos to your laptop over Wi-Fi.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>InstantDrop accesses your photo library so you can pick and beam original photos to your laptop over LAN.</string>
+
+	<!-- Local Network Permission (iOS 14+ UDP Broadcast & Raw TCP Socket Access) -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>InstantDrop discovers your laptop receiver on the local Wi-Fi network via UDP port 45454 and streams photos over TCP.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_instantdrop._tcp</string>
+		<string>_instantdrop._udp</string>
+	</array>
+
+	<!-- URL Scheme for receive_sharing_intent iOS Share Extension -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>ShareMedia-$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+			</array>
+		</dict>
+	</array>
+
+	<key>UILaunchStoryboardName</key>
+	<string>LaunchScreen</string>
+	<key>UIMainStoryboardFile</key>
+	<string>Main</string>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+</dict>
+</plist>
+

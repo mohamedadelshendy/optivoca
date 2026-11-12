@@ -1,0 +1,155 @@
+name: Build InstantDrop Products
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Build Laptop Receiver (Windows .exe & Linux binary)
+  # ---------------------------------------------------------------------------
+  build-laptop-receiver:
+    name: Build Laptop Receiver (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: InstantDrop-Receiver-Windows-x64
+            binary_path: laptop-receiver/target/release/instant-drop-receiver.exe
+            output_name: InstantDrop-Receiver.exe
+          - os: ubuntu-latest
+            artifact_name: InstantDrop-Receiver-Linux-x64
+            binary_path: laptop-receiver/target/release/instant-drop-receiver
+            output_name: instant-drop-receiver
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "laptop-receiver -> target"
+
+      - name: Compile Release Binary
+        working-directory: laptop-receiver
+        run: cargo build --release
+
+      - name: Rename binary for clean download
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "${{ matrix.binary_path }}" "dist/${{ matrix.output_name }}"
+
+      - name: Upload Receiver Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.output_name }}
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 2. Build Mobile App (Android Release APK)
+  # ---------------------------------------------------------------------------
+  build-mobile-apk:
+    name: Build Mobile Sender App (Android APK)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Scaffold missing platform runner files while preserving InstantDrop source & manifest
+        working-directory: mobile-app
+        run: |
+          cp pubspec.yaml /tmp/pubspec.yaml.bak
+          cp android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml.bak
+          cp -r lib /tmp/lib.bak
+
+          flutter create --org com.instantdrop --project-name instant_drop --platforms=android,ios .
+
+          cp /tmp/pubspec.yaml.bak pubspec.yaml
+          cp /tmp/AndroidManifest.xml.bak android/app/src/main/AndroidManifest.xml
+          rm -rf lib && cp -r /tmp/lib.bak lib
+
+          # Ensure Kotlin/Gradle namespace matches com.instantdrop.app from AndroidManifest.xml
+          sed -i 's/com.instantdrop.instant_drop/com.instantdrop.app/g' android/app/build.gradle* || true
+          MAIN_KT=$(find android/app/src/main -name "MainActivity.kt" -o -name "MainActivity.java" | head -n 1)
+          if [ -n "$MAIN_KT" ]; then
+            mkdir -p android/app/src/main/kotlin/com/instantdrop/app
+            sed -i 's/package com.instantdrop.instant_drop/package com.instantdrop.app/g' "$MAIN_KT"
+            mv "$MAIN_KT" android/app/src/main/kotlin/com/instantdrop/app/ || true
+          fi
+
+      - name: Install Flutter dependencies
+        working-directory: mobile-app
+        run: flutter pub get
+
+      - name: Build Release APK
+        working-directory: mobile-app
+        run: flutter build apk --release --no-tree-shake-icons
+
+      - name: Prepare APK for upload
+        run: |
+          mkdir -p dist-apk
+          cp mobile-app/build/app/outputs/flutter-apk/app-release.apk dist-apk/InstantDrop-Mobile.apk
+
+      - name: Upload Android APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: InstantDrop-Mobile-Android-APK
+          path: dist-apk/InstantDrop-Mobile.apk
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 3. Publish Ready-to-Use Products to GitHub Releases
+  # ---------------------------------------------------------------------------
+  publish-release:
+    name: Publish Products to GitHub Release
+    needs: [build-laptop-receiver, build-mobile-apk]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all built products
+        uses: actions/download-artifact@v4
+        with:
+          path: release-products
+          merge-multiple: true
+
+      - name: Create or Update Latest GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0-latest
+          name: "InstantDrop v1.0.0 — Ready-to-Use Binaries (Windows .exe, Linux, Android .apk)"
+          body: |
+            ## InstantDrop Ready-to-Use Products
+            Download and run immediately:
+            - **`InstantDrop-Receiver.exe`**: Windows Laptop Receiver Daemon (saves photos to `Pictures\InstantDrop`).
+            - **`instant-drop-receiver`**: Linux Laptop Receiver Daemon (saves photos to `~/Pictures/InstantDrop`).
+            - **`InstantDrop-Mobile.apk`**: Android Mobile Sender App (install on your phone to auto-discover your laptop on Wi-Fi and beam photos).
+          files: |
+            release-products/*
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
