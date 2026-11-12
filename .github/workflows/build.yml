@@ -95,6 +95,9 @@ jobs:
 
           # Ensure Kotlin/Gradle namespace matches com.instantdrop.app from AndroidManifest.xml
           sed -i 's/com.instantdrop.instant_drop/com.instantdrop.app/g' android/app/build.gradle* || true
+          # Upgrade compileSdk to 37 as required by receive_sharing_intent
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 37/g' android/app/build.gradle* || true
+          sed -i 's/compileSdk flutter.compileSdkVersion/compileSdk 37/g' android/app/build.gradle* || true
           MAIN_KT=$(find android/app/src/main -name "MainActivity.kt" -o -name "MainActivity.java" | head -n 1)
           if [ -n "$MAIN_KT" ]; then
             mkdir -p android/app/src/main/kotlin/com/instantdrop/app
