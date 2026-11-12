@@ -58,12 +58,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Locates `~/Pictures/InstantDrop` and creates it if it doesn't exist.
+/// Locates `C:\Users\QS\Desktop\detectmoney\my_photos` (or `INSTANT_DROP_DIR` if set) and creates it if it doesn't exist.
 async fn resolve_save_directory() -> Result<PathBuf, Box<dyn Error>> {
-    let base_dir = dirs::picture_dir()
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let target_dir = base_dir.join("InstantDrop");
+    let target_dir = if let Ok(custom_dir) = std::env::var("INSTANT_DROP_DIR") {
+        PathBuf::from(custom_dir)
+    } else if cfg!(target_os = "windows") {
+        PathBuf::from(r"C:\Users\QS\Desktop\detectmoney\my_photos")
+    } else {
+        let base_dir = dirs::desktop_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("."));
+        base_dir.join("detectmoney").join("my_photos")
+    };
     fs::create_dir_all(&target_dir).await?;
     Ok(target_dir)
 }
